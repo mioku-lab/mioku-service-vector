@@ -100,6 +100,17 @@ export interface SearchQuery {
   /** 时间衰减半衰期（毫秒）；0 表示不衰减 */
   recencyHalfLifeMs?: number;
   minScore?: number;
+  /** 传 false 绕过服务级结果缓存（写入后立刻要最新结果时用） */
+  cache?: boolean;
+}
+
+export interface VectorCacheStats {
+  hits: number;
+  misses: number;
+  /** 当前缓存条数 */
+  entries: number;
+  evictions: number;
+  invalidations: number;
 }
 
 /** 元数据过滤器，只支持必要的几种形状 */
@@ -162,6 +173,10 @@ export interface VectorServiceApi {
   status(): BootstrapState;
   /** 订阅状态变化，注册时会立刻回调一次当前状态 */
   onStatus(listener: (state: BootstrapState) => void): () => void;
+
+  /** 检索结果缓存的命中统计，写操作会按 collection 整体失效 */
+  cacheStats(): VectorCacheStats;
+  clearCache(): void;
 
   dispose(): void;
 }

@@ -387,7 +387,36 @@ async function main(): Promise<void> {
   check("取消订阅后不再收到回调", seen.length === afterUnsub, JSON.stringify(seen));
   sub.dispose();
 
-  section("14. 空集合与未知 collection");
+  section("14. 检索结果缓存");
+  await service.ensureCollection("cache.test");
+  await service.upsertMany([
+    { collection: "cache.test", docId: "c1", content: "缓存测试：今天吃了火锅", metadata: { groupId: "1" } },
+    { collection: "cache.test", docId: "c2", content: "缓存测试：明天去爬山", metadata: { groupId: "1" } },
+  ]);
+  service.clearCache();
+  await service.search({ collection: "cache.test", query: "火锅", topK: 1 });
+  const afterFirst = service.cacheStats();
+  const cachedHits = await service.search({ collection: "cache.test", query: "火锅", topK: 1 });
+  const afterSecond = service.cacheStats();
+  check("同一查询第二次命中缓存", afterSecond.hits === afterFirst.hits + 1, JSON.stringify(afterSecond));
+  check("缓存返回相同结果", cachedHits[0]?.docId === "c1", JSON.stringify(cachedHits.map((hit) => hit.docId)));
+
+  const bypass = await service.search({ collection: "cache.test", query: "火锅", topK: 1, cache: false });
+  const afterBypass = service.cacheStats();
+  check("cache:false 绕过缓存", afterBypass.hits === afterSecond.hits && bypass[0]?.docId === "c1", JSON.stringify(afterBypass));
+
+  await service.upsert({
+    collection: "cache.test",
+    docId: "c3",
+    content: "新写入：火锅店排队两小时",
+    metadata: { groupId: "1" },
+  });
+  const afterWrite = service.cacheStats();
+  check("写入后缓存失效", afterWrite.invalidations > afterBypass.invalidations, JSON.stringify(afterWrite));
+  const fresh = await service.search({ collection: "cache.test", query: "火锅", topK: 3 });
+  check("失效后能读到新数据", fresh.some((hit) => hit.docId === "c3"), JSON.stringify(fresh.map((hit) => hit.docId)));
+
+  section("15. 空集合与未知 collection");
   const empty = await service.search({ collection: "does-not-exist", query: "任意", topK: 3 });
   check("未知 collection 返回空", empty.length === 0);
   const emptyQuery = await service.search({ collection: "chat.message", query: "", topK: 3 });

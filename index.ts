@@ -73,6 +73,7 @@ export type {
   StoredRecord,
   UpsertInput,
   UpsertResult,
+  VectorCacheStats,
   VectorMetadata,
 } from "./types";
 export type { BootstrapPhase, BootstrapState } from "./bootstrap/state";

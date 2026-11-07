@@ -53,6 +53,14 @@ export const DEFAULT_EMBEDDING_MODEL = LOCAL_EMBEDDING_MODELS[0].id;
 /** 国内访问 HuggingFace 直连不稳定，默认走镜像；置空可改回官方地址 */
 export const DEFAULT_HF_MIRROR = "https://hf-mirror.com";
 
+export const CACHE_DEFAULTS = {
+  enabled: true,
+  /** 检索结果缓存时长；0 表示每次都真查 */
+  ttlMs: 120_000,
+  /** 缓存条数上限，超出按最久未用淘汰 */
+  maxEntries: 256,
+} as const;
+
 /** 服务配置：键名与 config.md 中的 `base.` 字段一一对应 */
 export interface VectorConfig {
   enabled: boolean;
@@ -61,6 +69,10 @@ export interface VectorConfig {
   hfMirror: string;
   autoDownload: boolean;
   metric: Metric;
+  /** 检索结果短缓存，写入时自动失效 */
+  cacheEnabled: boolean;
+  cacheTtlMs: number;
+  cacheMaxEntries: number;
 }
 
 export const DEFAULT_VECTOR_CONFIG: VectorConfig = {
@@ -69,6 +81,9 @@ export const DEFAULT_VECTOR_CONFIG: VectorConfig = {
   hfMirror: DEFAULT_HF_MIRROR,
   autoDownload: true,
   metric: "cosine",
+  cacheEnabled: CACHE_DEFAULTS.enabled,
+  cacheTtlMs: CACHE_DEFAULTS.ttlMs,
+  cacheMaxEntries: CACHE_DEFAULTS.maxEntries,
 };
 
 export function findEmbeddingModel(id: string): LocalEmbeddingModel | undefined {
@@ -84,6 +99,12 @@ function str(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
 }
 
+function num(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
 /** 合并磁盘配置与默认值；未知模型回落到默认模型 */
 export function normalizeVectorConfig(
   value: Record<string, unknown>,
@@ -95,5 +116,18 @@ export function normalizeVectorConfig(
     hfMirror: value.hfMirror === undefined ? DEFAULT_VECTOR_CONFIG.hfMirror : str(value.hfMirror),
     autoDownload: bool(value.autoDownload, DEFAULT_VECTOR_CONFIG.autoDownload),
     metric: str(value.metric) === "dot" ? "dot" : "cosine",
+    cacheEnabled: bool(value.cacheEnabled, DEFAULT_VECTOR_CONFIG.cacheEnabled),
+    cacheTtlMs: num(
+      value.cacheTtlMs,
+      DEFAULT_VECTOR_CONFIG.cacheTtlMs,
+      0,
+      60 * 60_000,
+    ),
+    cacheMaxEntries: num(
+      value.cacheMaxEntries,
+      DEFAULT_VECTOR_CONFIG.cacheMaxEntries,
+      0,
+      4096,
+    ),
   };
 }

@@ -10,6 +10,8 @@ export class VectorStore {
   private readonly ftsTables = new Map<string, FtsEntry>();
   /** FTS5 不可用时降级为纯稠密检索 */
   readonly ftsAvailable: boolean;
+  /** metadata 里真正建好生成列的键，过滤时优先走索引 */
+  readonly filterColumns = new Set<string>();
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
@@ -64,7 +66,10 @@ export class VectorStore {
       ["user_id", "userId"],
     ];
     for (const [column, jsonKey] of columns) {
-      if (existing.has(column)) continue;
+      if (existing.has(column)) {
+        this.filterColumns.add(jsonKey);
+        continue;
+      }
       try {
         this.db.run(
           `ALTER TABLE records ADD COLUMN ${column} TEXT GENERATED ALWAYS AS (json_extract(metadata, '$.${jsonKey}')) STORED`,
@@ -72,6 +77,7 @@ export class VectorStore {
         this.db.run(
           `CREATE INDEX IF NOT EXISTS idx_records_${column} ON records(collection, ${column})`,
         );
+        this.filterColumns.add(jsonKey);
       } catch {
         // 生成列不可用时忽略：过滤仍可走 json_extract
       }

@@ -1,6 +1,6 @@
 {
   "name": "mioku-service-vector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mioku 向量存储服务：为插件提供向量化、混合检索（稠密 + BM25）与长期记忆存储",
   "main": "index.ts",
   "type": "module",

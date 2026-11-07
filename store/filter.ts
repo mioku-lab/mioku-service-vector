@@ -14,14 +14,25 @@ const TOP_LEVEL_COLUMNS: Record<string, string> = {
   updatedAt: "updated_at",
 };
 
+/** metadata 里建有生成列 + 索引的键；由 store 探测后传入，缺列时自动退回 json_extract */
+export type FilterColumns = ReadonlySet<string>;
+
+/** 由 store 维护的生成列，命中时走索引 */
+const GENERATED_COLUMNS: Record<string, string> = {
+  groupId: "group_id",
+  userId: "user_id",
+};
+
 /** 元数据键写入 JSON path，单引号与引号需剔除 */
 function escapeKey(key: string): string {
   return key.replace(/['"\\]/g, "");
 }
 
-function fieldExpr(key: string): string {
+function fieldExpr(key: string, columns?: FilterColumns): string {
   const column = TOP_LEVEL_COLUMNS[key];
   if (column) return column;
+  const generated = columns?.has(key) ? GENERATED_COLUMNS[key] : undefined;
+  if (generated) return generated;
   return `json_extract(metadata, '$."${escapeKey(key)}"')`;
 }
 
@@ -38,15 +49,15 @@ function combine(parts: SqlValue[], joiner: "AND" | "OR"): SqlValue {
   };
 }
 
-function compileNode(filter: unknown): SqlValue {
+function compileNode(filter: unknown, columns?: FilterColumns): SqlValue {
   if (!filter || typeof filter !== "object") return TRUE;
   const node = filter as Record<string, unknown>;
 
   if (Array.isArray(node.and)) {
-    return combine(node.and.map(compileNode), "AND");
+    return combine(node.and.map((item) => compileNode(item, columns)), "AND");
   }
   if (Array.isArray(node.or)) {
-    return combine(node.or.map(compileNode), "OR");
+    return combine(node.or.map((item) => compileNode(item, columns)), "OR");
   }
 
   if (node.eq && typeof node.eq === "object") {
@@ -54,7 +65,7 @@ function compileNode(filter: unknown): SqlValue {
     for (const [key, value] of Object.entries(node.eq as Record<string, unknown>)) {
       if (value === undefined || value === null) continue;
       parts.push({
-        sql: `${fieldExpr(key)} = ?`,
+        sql: `${fieldExpr(key, columns)} = ?`,
         params: [toParam(value as string | number | boolean)],
       });
     }
@@ -66,7 +77,7 @@ function compileNode(filter: unknown): SqlValue {
     for (const [key, values] of Object.entries(node.in as Record<string, unknown>)) {
       if (!Array.isArray(values) || values.length === 0) continue;
       parts.push({
-        sql: `${fieldExpr(key)} IN (${values.map(() => "?").join(", ")})`,
+        sql: `${fieldExpr(key, columns)} IN (${values.map(() => "?").join(", ")})`,
         params: values.map((value) => toParam(value as string | number | boolean)),
       });
     }
@@ -78,7 +89,7 @@ function compileNode(filter: unknown): SqlValue {
     for (const [key, bounds] of Object.entries(node.range as Record<string, unknown>)) {
       if (!bounds || typeof bounds !== "object") continue;
       const { gte, lte } = bounds as { gte?: number; lte?: number };
-      const expr = fieldExpr(key);
+      const expr = fieldExpr(key, columns);
       if (typeof gte === "number") {
         parts.push({ sql: `${expr} >= ?`, params: [gte] });
       }
@@ -92,8 +103,8 @@ function compileNode(filter: unknown): SqlValue {
   return TRUE;
 }
 
-export function compileFilter(filter: unknown): SqlValue {
-  const compiled = compileNode(filter);
+export function compileFilter(filter: unknown, columns?: FilterColumns): SqlValue {
+  const compiled = compileNode(filter, columns);
   return { sql: compiled.sql, params: compiled.params };
 }
 

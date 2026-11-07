@@ -57,7 +57,7 @@ export async function runSearch(
     query.recencyHalfLifeMs ?? deps.defaults.recencyHalfLifeMs,
   );
 
-  const compiled = compileFilter(query.filter);
+  const compiled = compileFilter(query.filter, deps.store.filterColumns);
   const whereSql = compiled.sql;
   const params = compiled.params;
 

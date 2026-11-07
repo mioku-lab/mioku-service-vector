@@ -3,6 +3,7 @@ import { RecordStore } from "./store/records";
 import { VectorStore } from "./store/schema";
 import { compileFilter } from "./store/filter";
 import { runSearch, type Reranker } from "./retrieve";
+import { QueryCache, queryCacheKey } from "./retrieve/query-cache";
 import { BootstrapStateStore, type BootstrapState } from "./bootstrap/state";
 import { ensureModelFiles, modelDirectory } from "./bootstrap/model";
 import { toIndexText } from "./utils/tokenize";
@@ -23,6 +24,7 @@ import type {
   StoredRecord,
   UpsertInput,
   UpsertResult,
+  VectorCacheStats,
   VectorServiceApi,
   VectorMetadata,
 } from "./types";
@@ -48,6 +50,7 @@ export class VectorServiceImpl implements VectorServiceApi {
   private readonly embedder: Embedder;
   private readonly deps: VectorServiceDeps;
   private readonly statusStore: BootstrapStateStore;
+  private readonly cache: QueryCache;
 
   constructor(deps: VectorServiceDeps) {
     this.deps = deps;
@@ -65,6 +68,12 @@ export class VectorServiceImpl implements VectorServiceApi {
       cacheSize: 4096,
       ...(deps.model && { model: deps.model }),
       logger: deps.logger,
+    });
+
+    this.cache = new QueryCache({
+      enabled: deps.config.cacheEnabled,
+      ttlMs: deps.config.cacheTtlMs,
+      maxEntries: deps.config.cacheMaxEntries,
     });
 
     this.statusStore = new BootstrapStateStore(
@@ -240,7 +249,10 @@ export class VectorServiceImpl implements VectorServiceApi {
         patch.embedModel = model;
         changed = true;
       }
-      return changed ? this.records.updateCollection(key, patch) : info;
+      if (!changed) return info;
+      const updated = this.records.updateCollection(key, patch);
+      this.cache.invalidate(key);
+      return updated;
     }
 
     // 模型可能还在加载，维度先留 0，拿到向量后回填
@@ -291,6 +303,7 @@ export class VectorServiceImpl implements VectorServiceApi {
     const key = normalizeName(name);
     if (!this.records.getCollectionRow(key)) return;
     this.records.dropCollection(key);
+    this.cache.invalidate(key);
     this.deps.logger.debug(`[vector] 已删除 collection ${key}`);
   }
 
@@ -426,6 +439,7 @@ export class VectorServiceImpl implements VectorServiceApi {
       }
     }
 
+    this.cache.invalidate(collectionName);
     return { results, failed };
   }
 
@@ -441,6 +455,14 @@ export class VectorServiceImpl implements VectorServiceApi {
     return this.runQuery(query, "sparse");
   }
 
+  cacheStats(): VectorCacheStats {
+    return this.cache.stats();
+  }
+
+  clearCache(): void {
+    this.cache.clear();
+  }
+
   private async runQuery(
     query: SearchQuery,
     mode: SearchQuery["mode"],
@@ -448,24 +470,28 @@ export class VectorServiceImpl implements VectorServiceApi {
     const key = normalizeName(query.collection);
     const info = this.getCollection(key);
     if (!info) return [];
-    return runSearch(
-      {
-        store: this.store,
-        records: this.records,
-        embedder: this.embedder,
-        defaults: {
-          denseK: RETRIEVAL_DEFAULTS.denseK,
-          sparseK: RETRIEVAL_DEFAULTS.sparseK,
-          denseWeight: RETRIEVAL_DEFAULTS.denseWeight,
-          candidateLimit: RETRIEVAL_DEFAULTS.candidateLimit,
-          recencyHalfLifeMs: 0,
+    const execute = (): Promise<SearchHit[]> =>
+      runSearch(
+        {
+          store: this.store,
+          records: this.records,
+          embedder: this.embedder,
+          defaults: {
+            denseK: RETRIEVAL_DEFAULTS.denseK,
+            sparseK: RETRIEVAL_DEFAULTS.sparseK,
+            denseWeight: RETRIEVAL_DEFAULTS.denseWeight,
+            candidateLimit: RETRIEVAL_DEFAULTS.candidateLimit,
+            recencyHalfLifeMs: 0,
+          },
+          ...(this.deps.rerank && { rerank: this.deps.rerank }),
+          logger: this.deps.logger,
         },
-        ...(this.deps.rerank && { rerank: this.deps.rerank }),
-        logger: this.deps.logger,
-      },
-      { ...query, mode },
-      info,
-    );
+        { ...query, mode },
+        info,
+      );
+
+    if (query.cache === false) return execute();
+    return this.cache.memo(key, queryCacheKey(query, mode ?? "hybrid"), execute);
   }
 
   get(collection: string, docId: string): StoredRecord | undefined {
@@ -475,7 +501,7 @@ export class VectorServiceImpl implements VectorServiceApi {
   count(collection: string, filter?: MetadataFilter): number {
     const key = normalizeName(collection);
     if (!filter) return this.records.countRecords(key);
-    const compiled = compileFilter(filter);
+    const compiled = compileFilter(filter, this.store.filterColumns);
     return this.records.countByFilter(key, compiled.sql, compiled.params);
   }
 
@@ -486,14 +512,16 @@ export class VectorServiceImpl implements VectorServiceApi {
     );
     const ids = this.records.deleteByDocIds(key, list);
     this.store.removeIndexRows(key, ids);
+    this.cache.invalidate(key);
     return ids.length;
   }
 
   removeWhere(collection: string, filter: MetadataFilter): number {
     const key = normalizeName(collection);
-    const compiled = compileFilter(filter);
+    const compiled = compileFilter(filter, this.store.filterColumns);
     const ids = this.records.deleteByFilter(key, compiled.sql, compiled.params);
     this.store.removeIndexRows(key, ids);
+    this.cache.invalidate(key);
     return ids.length;
   }
 
@@ -501,6 +529,7 @@ export class VectorServiceImpl implements VectorServiceApi {
     const key = normalizeName(collection);
     const ids = this.records.clearCollection(key);
     this.store.clearFts(key);
+    this.cache.invalidate(key);
     return ids.length;
   }
 
@@ -571,10 +600,12 @@ export class VectorServiceImpl implements VectorServiceApi {
     if (result.dim > 0 && result.dim !== info.dim) {
       this.records.updateCollection(key, { dim: result.dim });
     }
+    this.cache.invalidate(key);
     return result;
   }
 
   dispose(): void {
+    this.cache.clear();
     this.embedder.dispose();
     this.store.close();
   }

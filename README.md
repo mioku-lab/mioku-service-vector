@@ -75,8 +75,26 @@ vectors.onStatus((state) => {}); // 订阅变化，注册时立刻回调一次
 | `reindex(collection, options?)`                                                        | 换模型或换维度后重建向量            |
 | `dropCollection(name)`                                                                 | 删除整个 collection         |
 | `status()` / `onStatus(fn)`                                                            | 模型加载状态                  |
+| `cacheStats()` / `clearCache()`                                                        | 检索结果缓存的命中统计与手动清空        |
 
 `defineVectorCollection<TMeta>(name)` 生成带类型的 collection 引用，业务 metadata 形状由调用方声明。
+
+## 检索结果缓存
+
+`search*` 的结果会按「collection + 查询 + 过滤条件 + 检索参数」缓存一小段时间，默认 120 秒：
+
+- 进程内并发同一查询只算一次；
+- 任何写入（upsert / remove / removeWhere / clear / reindex / dropCollection）都会让该 collection 的缓存整体失效，
+  所以写完立刻查不会读到旧结果；
+- 单次调用可以传 `cache: false` 绕过；`cacheStats()` 给出命中/未命中/条数/失效次数。
+
+这项缓存是为「同一条消息被连着跑好几轮」的聊天场景准备的：一轮里唯一的变量是记忆检索，
+缓存能省掉重复的向量化与全库扫描。设置项见 `config.md` 的 `cacheEnabled` / `cacheTtlMs` / `cacheMaxEntries`。
+
+## 元数据过滤的索引
+
+`groupId` / `userId` 两个常用过滤键会建成 SQLite 生成列并加索引，过滤时直接走索引；
+老库若建列失败会自动退回 `json_extract`，行为不变，只是慢一点。
 
 ## 配置
 
